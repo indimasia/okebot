@@ -425,6 +425,330 @@ async def user_list(ctx):
     embed.set_footer(text=f"Requested by {ctx.author.name}")
     await ctx.send(embed=embed)
 
+@bot.command(name='clockin')
+async def clock_in(ctx, *, notes: str = None):
+    """Clock in for attendance with optional image and notes"""
+    try:
+        # Get Indonesian time (GMT+7)
+        import pytz
+        jakarta_tz = pytz.timezone('Asia/Jakarta')
+        now_jakarta = datetime.datetime.now(jakarta_tz)
+        current_time = now_jakarta.time()
+        
+        # Check if clock-in is allowed (07:30 or later)
+        earliest_time = datetime.time(7, 30)  # 07:30
+        if current_time < earliest_time:
+            embed = discord.Embed(
+                title="⏰ Too Early to Clock In",
+                description=f"Clock-in is only allowed from **07:30** onwards.\n\nCurrent time: **{current_time.strftime('%H:%M')}** (GMT+7)\nEarliest allowed: **07:30** (GMT+7)",
+                color=discord.Color.orange(),
+                timestamp=datetime.datetime.utcnow()
+            )
+            embed.set_footer(text=f"Requested by {ctx.author.name}")
+            await ctx.send(embed=embed)
+            return
+        
+        # Ensure server is registered first
+        server_id = await ensure_server_registered(ctx.guild)
+        if not server_id:
+            raise Exception("Failed to register server")
+
+        # Check if user is registered
+        user_response = supabase.table('users').select('*')\
+            .eq('discord_id', str(ctx.author.id))\
+            .execute()
+        
+        if not user_response.data:
+            embed = discord.Embed(
+                title="❌ Clock-in Failed",
+                description=f"You are not registered! Please ask an admin to register you first using `{BOT_PREFIX}register`.",
+                color=discord.Color.red(),
+                timestamp=datetime.datetime.utcnow()
+            )
+            embed.set_footer(text=f"Requested by {ctx.author.name}")
+            await ctx.send(embed=embed)
+            return
+        
+        user_id = user_response.data[0]['id']
+        username = user_response.data[0]['username']
+        
+        # Check if user is registered in this server
+        user_server_response = supabase.table('user_servers')\
+            .select('*')\
+            .eq('user_id', user_id)\
+            .eq('server_id', server_id)\
+            .execute()
+        
+        if not user_server_response.data:
+            embed = discord.Embed(
+                title="❌ Clock-in Failed",
+                description=f"You are not registered in this server! Please ask an admin to register you using `{BOT_PREFIX}register`.",
+                color=discord.Color.red(),
+                timestamp=datetime.datetime.utcnow()
+            )
+            embed.set_footer(text=f"Requested by {ctx.author.name}")
+            await ctx.send(embed=embed)
+            return
+        
+        # Check for today's attendance (prevent multiple clock-ins per day) - using Jakarta timezone
+        today_jakarta = now_jakarta.date()
+        # Convert Jakarta date to UTC for database query
+        today_utc_start = jakarta_tz.localize(datetime.datetime.combine(today_jakarta, datetime.time.min)).astimezone(pytz.UTC)
+        today_utc_end = jakarta_tz.localize(datetime.datetime.combine(today_jakarta, datetime.time.max)).astimezone(pytz.UTC)
+        
+        existing_attendance = supabase.table('attendance')\
+            .select('*')\
+            .eq('user_id', user_id)\
+            .eq('server_id', server_id)\
+            .gte('clock_in_time', today_utc_start.isoformat())\
+            .lt('clock_in_time', today_utc_end.isoformat())\
+            .execute()
+        
+        if existing_attendance.data:
+            existing_time = existing_attendance.data[0]['clock_in_time']
+            try:
+                clock_time = datetime.datetime.fromisoformat(existing_time.replace('Z', '+00:00'))
+                formatted_time = clock_time.strftime("%H:%M:%S")
+            except:
+                formatted_time = "Unknown time"
+            
+            embed = discord.Embed(
+                title="⚠️ Already Clocked In",
+                description=f"You have already clocked in today at **{formatted_time}**!",
+                color=discord.Color.orange(),
+                timestamp=datetime.datetime.utcnow()
+            )
+            embed.set_footer(text=f"Requested by {ctx.author.name}")
+            await ctx.send(embed=embed)
+            return
+        
+        # Handle image attachment - REQUIRED
+        image_url = None
+        if not ctx.message.attachments:
+            embed = discord.Embed(
+                title="❌ Image Required",
+                description="Please attach an image when clocking in. Images are required for attendance verification.",
+                color=discord.Color.red(),
+                timestamp=datetime.datetime.utcnow()
+            )
+            embed.set_footer(text=f"Requested by {ctx.author.name}")
+            await ctx.send(embed=embed)
+            return
+        
+        attachment = ctx.message.attachments[0]
+        if attachment.content_type and attachment.content_type.startswith('image/'):
+            image_url = attachment.url
+        else:
+            embed = discord.Embed(
+                title="❌ Invalid Attachment",
+                description="Please attach an image file only. Images are required for attendance verification.",
+                color=discord.Color.red(),
+                timestamp=datetime.datetime.utcnow()
+            )
+            embed.set_footer(text=f"Requested by {ctx.author.name}")
+            await ctx.send(embed=embed)
+            return
+        
+        # Determine lateness status
+        late_time = datetime.time(9, 0)  # 09:00
+        almost_late_time = datetime.time(8, 45)  # 08:45 (15 minutes before 9 AM)
+        
+        lateness_status = ""
+        embed_color = discord.Color.green()
+        
+        if current_time > late_time:
+            lateness_status = " 😱 **YOU ARE LATE!**"
+            embed_color = discord.Color.red()
+        elif current_time >= almost_late_time:
+            lateness_status = " ⚠️ **ALMOST LATE!**"
+            embed_color = discord.Color.orange()
+        
+        # Create attendance record (store in UTC but display in Jakarta time)
+        attendance_data = {
+            'user_id': user_id,
+            'server_id': server_id,
+            'clock_in_time': now_jakarta.astimezone(pytz.UTC).isoformat(),
+            'image_url': image_url,
+            'notes': notes
+        }
+        
+        response = supabase.table('attendance').insert(attendance_data).execute()
+        
+        if response.data:
+            embed = discord.Embed(
+                title=f"✅ Clock-in Successful{lateness_status}",
+                description=f"**{username}** has successfully clocked in!",
+                color=embed_color,
+                timestamp=datetime.datetime.utcnow()
+            )
+            
+            # Add attendance details
+            embed.add_field(name="👤 User", value=ctx.author.mention, inline=True)
+            embed.add_field(name="🏢 Server", value=ctx.guild.name, inline=True)
+            embed.add_field(name="⏰ Time (GMT+7)", value=now_jakarta.strftime("%Y-%m-%d %H:%M:%S"), inline=True)
+            
+            if notes:
+                embed.add_field(name="📝 Notes", value=notes, inline=False)
+            
+            if image_url:
+                embed.add_field(name="📷 Image", value="Attached", inline=True)
+                embed.set_image(url=image_url)
+            
+            # Get today's attendance count for this server (using Jakarta timezone)
+            today_count_response = supabase.table('attendance')\
+                .select('*', count='exact')\
+                .eq('server_id', server_id)\
+                .gte('clock_in_time', today_utc_start.isoformat())\
+                .lt('clock_in_time', today_utc_end.isoformat())\
+                .execute()
+            
+            today_count = today_count_response.count if today_count_response.count else 0
+            embed.add_field(name="📊 Today's Attendance", value=f"{today_count} people clocked in", inline=True)
+        
+        else:
+            embed = discord.Embed(
+                title="❌ Clock-in Failed",
+                description="Failed to record attendance. Please try again.",
+                color=discord.Color.red(),
+                timestamp=datetime.datetime.utcnow()
+            )
+    
+    except Exception as e:
+        embed = discord.Embed(
+            title="❌ Clock-in Error",
+            description=f"An error occurred during clock-in: {str(e)}",
+            color=discord.Color.red(),
+            timestamp=datetime.datetime.utcnow()
+        )
+    
+    embed.set_footer(text=f"Requested by {ctx.author.name}")
+    await ctx.send(embed=embed)
+
+@bot.command(name='attendance')
+@commands.has_permissions(administrator=True)
+async def attendance_report(ctx, days: int = 7):
+    """Show attendance report for the server"""
+    try:
+        # Ensure server is registered first
+        server_id = await ensure_server_registered(ctx.guild)
+        if not server_id:
+            raise Exception("Failed to register server")
+
+        # Limit days to reasonable range
+        if days < 1:
+            days = 1
+        elif days > 30:
+            days = 30
+        
+        # Get attendance data for the specified period
+        start_date = datetime.datetime.utcnow() - datetime.timedelta(days=days)
+        
+        response = supabase.table('attendance')\
+            .select('*, users(username, discord_id)')\
+            .eq('server_id', server_id)\
+            .gte('clock_in_time', start_date.isoformat())\
+            .order('clock_in_time', desc=True)\
+            .execute()
+        
+        embed = discord.Embed(
+            title="📊 Attendance Report",
+            description=f"Attendance data for **{ctx.guild.name}** (Last {days} days)",
+            color=discord.Color.blue(),
+            timestamp=datetime.datetime.utcnow()
+        )
+        
+        if not response.data:
+            embed.add_field(
+                name="🚨 No Data",
+                value=f"No attendance records found for the last {days} days.",
+                inline=False
+            )
+        else:
+            # Group by date
+            daily_stats = {}
+            total_unique_users = set()
+            
+            for record in response.data:
+                try:
+                    clock_time = datetime.datetime.fromisoformat(record['clock_in_time'].replace('Z', '+00:00'))
+                    date_key = clock_time.date()
+                    
+                    if date_key not in daily_stats:
+                        daily_stats[date_key] = {
+                            'count': 0,
+                            'users': [],
+                            'with_images': 0
+                        }
+                    
+                    daily_stats[date_key]['count'] += 1
+                    daily_stats[date_key]['users'].append(record['users']['username'])
+                    total_unique_users.add(record['users']['username'])
+                    
+                    if record.get('image_url'):
+                        daily_stats[date_key]['with_images'] += 1
+                        
+                except Exception as e:
+                    continue
+            
+            # Summary statistics
+            total_clock_ins = len(response.data)
+            unique_users_count = len(total_unique_users)
+            days_with_activity = len(daily_stats)
+            
+            embed.add_field(
+                name="📊 Summary Statistics",
+                value=f"**Total Clock-ins:** {total_clock_ins}\n**Unique Users:** {unique_users_count}\n**Active Days:** {days_with_activity}/{days}",
+                inline=False
+            )
+            
+            # Daily breakdown (show last 7 days max in embed)
+            sorted_dates = sorted(daily_stats.keys(), reverse=True)
+            display_dates = sorted_dates[:7]  # Show only last 7 days in embed
+            
+            daily_breakdown = []
+            for date in display_dates:
+                stats = daily_stats[date]
+                date_str = date.strftime("%Y-%m-%d (%a)")
+                users_str = ", ".join(stats['users'][:5])  # Show first 5 users
+                if len(stats['users']) > 5:
+                    users_str += f" +{len(stats['users']) - 5} more"
+                
+                image_info = f" (📷{stats['with_images']})" if stats['with_images'] > 0 else ""
+                daily_breakdown.append(f"**{date_str}:** {stats['count']} clock-ins{image_info}\n{users_str}")
+            
+            if daily_breakdown:
+                embed.add_field(
+                    name="📅 Daily Breakdown",
+                    value="\n\n".join(daily_breakdown),
+                    inline=False
+                )
+            
+            # Most active users
+            user_counts = {}
+            for record in response.data:
+                username = record['users']['username']
+                user_counts[username] = user_counts.get(username, 0) + 1
+            
+            top_users = sorted(user_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+            if top_users:
+                top_users_str = "\n".join([f"{i+1}. **{user}** - {count} times" for i, (user, count) in enumerate(top_users)])
+                embed.add_field(
+                    name="🏆 Most Active Users",
+                    value=top_users_str,
+                    inline=True
+                )
+    
+    except Exception as e:
+        embed = discord.Embed(
+            title="❌ Error",
+            description=f"An error occurred while generating attendance report: {str(e)}",
+            color=discord.Color.red(),
+            timestamp=datetime.datetime.utcnow()
+        )
+    
+    embed.set_footer(text=f"Requested by {ctx.author.name}")
+    await ctx.send(embed=embed)
+
 @bot.command(name='ping')
 async def ping(ctx):
     """Test bot latency"""
@@ -529,14 +853,20 @@ async def help(ctx):
     ]
     embed.add_field(name="📋 Basic Commands", value="\n".join(basic_commands), inline=False)
     
+    # User Commands
+    user_commands = [
+        f"`{BOT_PREFIX}clockin [notes]` - Clock in for attendance (image required)"
+    ]
+    embed.add_field(name="👤 User Commands", value="\n".join(user_commands), inline=False)
+    
     # Admin Commands
     admin_commands = [
         f"`{BOT_PREFIX}register [@user] [username]` - Register user",
         f"`{BOT_PREFIX}unregister [@user]` - Unregister user",
         f"`{BOT_PREFIX}changeusername [@user] [new_username]` - Change username for a registered user",
         f"`{BOT_PREFIX}userlist` - List all registered users on this server",
-        f"`{BOT_PREFIX}clear [amount]` - Delete messages",
-        f"`{BOT_PREFIX}userlist` - List all registered users on this server"
+        f"`{BOT_PREFIX}attendance [days]` - Show attendance report (default: 7 days)",
+        f"`{BOT_PREFIX}clear [amount]` - Delete messages"
     ]
     embed.add_field(name="⚡ Admin Commands", value="\n".join(admin_commands), inline=False)
     
