@@ -1,0 +1,7 @@
+- [x] Create Bot
+- [x] Create clockin
+- [x] Create attendance report
+- [ ] Create frontend
+- [ ] Create frontend login using discord
+- [ ] Create Report
+- [ ] Create a Project Report on each channel based on reporting user
