@@ -1,6 +1,8 @@
 - [x] Create Bot
 - [x] Create clockin
 - [x] Create attendance report
+- [ ] reminder to clockin
+- [ ] On Off Account
 - [ ] Create frontend
 - [ ] Create frontend login using discord
 - [ ] Create Report
