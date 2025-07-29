@@ -1,6 +1,8 @@
 - [x] Create Bot
 - [x] Create clockin
 - [x] Create attendance report
+- [ ] calculate point based on the recent attendance
+- [ ] Point System to leaderboard
 - [ ] reminder to clockin
 - [ ] On Off Account
 - [ ] Create frontend
