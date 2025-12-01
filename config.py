@@ -10,9 +10,9 @@ if not DISCORD_TOKEN:
     raise ValueError("DISCORD_TOKEN not found in environment variables")
 
 # Bot settings
-BOT_PREFIX = os.getenv('BOT_PREFIX')
-BOT_NAME = os.getenv('BOT_NAME')
-BOT_VERSION = os.getenv('BOT_VERSION')
+BOT_PREFIX = os.getenv('BOT_PREFIX', '!oke ')  # Default: "!oke " (with space)
+BOT_NAME = os.getenv('BOT_NAME', 'OKEbot')
+BOT_VERSION = os.getenv('BOT_VERSION', '1.0.0')
 
 # Supabase configuration
 SUPABASE_URL = os.getenv('SUPABASE_URL')
